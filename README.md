@@ -89,3 +89,12 @@ Diagrams:
 3-
 
 <img width="928" height="592" alt="Screenshot 2025-11-05 at 11 10 59 PM" src="https://github.com/user-attachments/assets/e2e882ca-a8b4-478e-8f53-d03c04067f79" />
+
+Robot:
+
+![WhatsApp Image 2025-11-07 at 01 33 08_2290a7b4](https://github.com/user-attachments/assets/9df17ffe-0c57-4538-9a66-799af07502f9)
+
+Video Demonstration:
+
+https://drive.google.com/file/d/1ri3r-wA76eAgqPqTPXfmzbBd2kPpN_zP/view?usp=drive_link
+
