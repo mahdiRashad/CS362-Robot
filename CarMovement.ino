@@ -1,186 +1,121 @@
-//Car movment code this code is responsible of the movment of the robot by depending on the resors readings from the sensors arduino
-//Wire library used for communication between arduinos.
+// ===== Motor Arduino (I2C Master, 5-sensor avoidance) =====
 #include <Wire.h>
 
-//Direction and speed pins for the the gear motors
-int speedPinRight = 9;
-int MotorDirPin1Right = 12;
-int MotorDirPin2Right = 11;
-int speedPinLeft = 6;
-int MotorDirPin1Left = 7;
-int MotorDirPin2Left = 8;
+// ---- Motor pins
+#define speedPinR 9
+#define RightMotorDirPin1 12
+#define RightMotorDirPin2 11
+#define speedPinL 6
+#define LeftMotorDirPin1 7
+#define LeftMotorDirPin2 8
 
-//Set the stop distence and turning delay
-int STOP_CM = 30;
-int REDIRECT_CM = 25;
-int TURN_TIME = 350;
-int GO_BACK_TIME = 500;
-
-//Intialize the speed to half and full
-//Half-speed forward
-int half_speed = 128;
-//Full-speed turns/back
-int full_speed = 255;
-
-//I²C address of your sensors arduino for communcation
 const uint8_t SENSOR_ADDR = 0x10;
 
-//Initlize driving states
-enum State : int { DRIVE_FWD, AVOID_LEFT, AVOID_RIGHT, GO_BACK, HALT };
-//Initilse the state to HALT
+// ---- Speeds
+const uint8_t SPEED_FWD_L  = 128;   // half-speed forward
+const uint8_t SPEED_FWD_R  = 128;
+const uint8_t SPEED_FULL_L = 255;   // full-speed turns/back
+const uint8_t SPEED_FULL_R = 255;
+
+// ---- Thresholds
+const uint16_t FRONT_STOP_CM = 30;  // when to avoid
+const uint16_t TURN_TIME_MS  = 250;
+
+// ---- State machine
+enum State : uint8_t { DRIVE_FWD, AVOID_LEFT, AVOID_RIGHT, HALT };
 State state = HALT;
-unsigned long stateStart = 0;
-//update the state and time when witching between states
+unsigned long stateStartMs = 0;
 void setState(State s){ state = s; stateStartMs = millis(); }
 
-//Motor helper functions, ahead, back, left turn, right turn. Also setSpeed and stop functions.
-//Set the left side and right side speeds
-void setSpeed(int left,int right){ 
-  analogWrite(speedPinLeft,left); 
-  analogWrite(speedPinRight,right); 
-}
-
-//Stop the robot
-void stop(){ 
-  digitalWrite(MotorDirPin1Right,LOW); 
-  digitalWrite(MotorDirPin2Right,LOW); 
-  digitalWrite(LeftDirPin1Motor,LOW); 
-  digitalWrite(MotorDirPin2Left,LOW); 
-  set_Motorspeed(0,0); 
-}
-
-//Move forward
+// ---- Motor helpers
+void set_Motorspeed(int l,int r){ analogWrite(speedPinL,constrain(l,0,255)); analogWrite(speedPinR,constrain(r,0,255)); }
+void stop_Stop(){ digitalWrite(RightMotorDirPin1,LOW); digitalWrite(RightMotorDirPin2,LOW); digitalWrite(LeftMotorDirPin1,LOW); digitalWrite(LeftMotorDirPin2,LOW); set_Motorspeed(0,0); }
 void go_Advance(){
-  digitalWrite(MotorDirPin1Right,HIGH); 
-  digitalWrite(MotorDirPin2Right,LOW);
-  digitalWrite(MotorDirPin1Left, HIGH); 
-  digitalWrite(MotorDirPin2Left, LOW);
-  setSpeed(half_speed, half_speed);
+  digitalWrite(RightMotorDirPin1,HIGH); digitalWrite(RightMotorDirPin2,LOW);
+  digitalWrite(LeftMotorDirPin1, HIGH); digitalWrite(LeftMotorDirPin2, LOW);
+  set_Motorspeed(128, 128);
 }
-
-//Move backward
 void go_Back(){
-  digitalWrite(MotorDirPin1Right,LOW);  
-  digitalWrite(MotorDirPin2Right,HIGH);
-  digitalWrite(MotorDirPin1Left, LOW);  
-  digitalWrite(MotorDirPin2Left, HIGH);
-  setSpeed(half_speed, half_speed);
+  digitalWrite(RightMotorDirPin1,LOW);  digitalWrite(RightMotorDirPin2,HIGH);
+  digitalWrite(LeftMotorDirPin1, LOW);  digitalWrite(LeftMotorDirPin2, HIGH);
+  set_Motorspeed(SPEED_FULL_L, SPEED_FULL_R);
+}
+void turn_Left_inPlace(){
+  digitalWrite(RightMotorDirPin1,HIGH); digitalWrite(RightMotorDirPin2,LOW);
+  digitalWrite(LeftMotorDirPin1, LOW);  digitalWrite(LeftMotorDirPin2, HIGH);
+  set_Motorspeed(175, 175);
+}
+void turn_Right_inPlace(){
+  digitalWrite(RightMotorDirPin1,LOW);  digitalWrite(RightMotorDirPin2,HIGH);
+  digitalWrite(LeftMotorDirPin1, HIGH); digitalWrite(LeftMotorDirPin2, LOW);
+  set_Motorspeed(175, 175);
+}
+void init_GPIO(){
+  pinMode(RightMotorDirPin1,OUTPUT); pinMode(RightMotorDirPin2,OUTPUT); pinMode(speedPinL,OUTPUT);
+  pinMode(LeftMotorDirPin1, OUTPUT); pinMode(LeftMotorDirPin2, OUTPUT); pinMode(speedPinR,OUTPUT);
+  stop_Stop();
 }
 
-//Turn left
-void turn_Left(){
-  digitalWrite(MotorDirPin1Right,HIGH); 
-  digitalWrite(MotorDirPin2Right,LOW);
-  digitalWrite(MotorDirPin1Left, LOW);  
-  digitalWrite(MotorDirPin2Left, HIGH);
-  setSpeed(180, 180);
-}
-
-//Turn right
-void turn_Right(){
-  digitalWrite(MotorDirPin1Right,LOW);  
-  digitalWrite(MotorDirPin2Right,HIGH);
-  digitalWrite(MotorDirPin1Left, HIGH); 
-  digitalWrite(MotorDirPin2Left, LOW);
-  setSpeed(180, 180);
-}
-
-//Read 10 bytes: Left, FrontLeft, Front, FrontRight, Right from the sensors aruino
-bool read5(uint16_t &Left,uint16_t &FrontLeft,uint16_t &Front,uint16_t &FrontRight,uint16_t &Right){
+// ---- Read 10 bytes: L, FL, F, FR, R (uint16 LE)
+bool read5(uint16_t &L,uint16_t &FL,uint16_t &F,uint16_t &FR,uint16_t &R){
   Wire.requestFrom((int)SENSOR_ADDR, 10);
-  if (Wire.available() < 10){
-    return false;
-  }
-  auto rd16 = [](){ 
-    uint8_t lo=Wire.read(); 
-    uint8_t hi=Wire.read(); 
-    return (uint16_t)lo | ((uint16_t)hi<<8); 
-  };
-  Left=rd16(); FrontLeft=rd16(); Front=rd16(); FrontRight=rd16(); Right=rd16();
+  if (Wire.available() < 10) return false;
+  auto rd16 = [](){ uint8_t lo=Wire.read(); uint8_t hi=Wire.read(); return (uint16_t)lo | ((uint16_t)hi<<8); };
+  L=rd16(); FL=rd16(); F=rd16(); FR=rd16(); R=rd16();
   return true;
 }
 
 void setup(){
-  //set pin modes
-  pinMode(MotorDirPin1Right,OUTPUT); 
-  pinMode(MotorDirPin2Right,OUTPUT); 
-  pinMode(speedPinLeft,OUTPUT);
-  pinMode(MotorDirPin1Left, OUTPUT); 
-  pinMode(MotorDirPin2Left, OUTPUT); 
-  pinMode(speedPinRight,OUTPUT);
-  stop();
-
-  //start the comunaction and serial monitor for live data
+  init_GPIO();
   Wire.begin();
   Serial.begin(9600);
   setState(DRIVE_FWD);
 }
 
 void loop(){
-  //Make sure to repet every 100ms
   static unsigned long lastMs=0;
   if (millis()-lastMs >= 100){ lastMs = millis();
 
-    //read the sensors data if there is not data halt and wait 100ms
     uint16_t L,FL,F,FR,R;
     if (!read5(L,FL,F,FR,R)){
-      stop(); setState(HALT); Serial.println("I2C fail set state to HALT"); delay(100); return;
+      stop_Stop(); setState(HALT); Serial.println("I2C fail -> HALT"); delay(80); return;
     }
+    // Debug
+    Serial.print(" L:");Serial.print(L); Serial.print(" FL:");Serial.print(FL);
+    Serial.print(" F:");Serial.print(F); Serial.print(" FR:");Serial.print(FR);
+    Serial.print(" R:");Serial.println(R);
 
-    //Debug print the sensors values to the serial monitor
-    Serial.print("Left:");Serial.print(L); 
-    Serial.print(" FrontLeft:");Serial.print(FL);
-    Serial.print(" Front:");Serial.print(F); 
-    Serial.print(" FrontRight:");Serial.print(FR);
-    Serial.print(" Right:");Serial.println(R);
-
-    //Combine sectors
-    uint16_t front_sector = F;
-    uint16_t frontLeftRight = min(FL, FR);
+    // Combine sectors
+    uint16_t front_sector = min(F, min(FL, FR));   // anything close in front counts
     uint16_t left_space   = max(L, FL);
     uint16_t right_space  = max(R, FR);
 
     switch (state){
       case DRIVE_FWD:
-        if (front_sector < STOP_CM || frontLeftRight < REDIRECT_CM){
-          stop(); delay(40);
-          //choose side with more space
-          if ((left_space < 20 && right_space < 20) || (FL < 15 && FR < 15)){
-            setState(GO_BACK);
-          }
-          else if (left_space >= right_space && FL > 15) {
-            setState(AVOID_LEFT);
-          }
-          else if(left_space < right_space && FR > 15){
-            setState(AVOID_RIGHT);
-          }
-          else{
-            setState(GO_BACK);
-          }
+        if (front_sector < FRONT_STOP_CM){
+          stop_Stop(); delay(40);
+          // choose side with more space
+          if (left_space > right_space) setState(AVOID_LEFT);
+          else                          setState(AVOID_RIGHT);
         } else {
           go_Advance();
         }
         break;
 
       case AVOID_LEFT:
-        turn_Left();
-        if (millis() - stateStartMs > TURN_TIME) setState(DRIVE_FWD);
+        turn_Left_inPlace();
+        if (millis() - stateStartMs > TURN_TIME_MS) setState(DRIVE_FWD);
         break;
 
       case AVOID_RIGHT:
-        turn_Right();
-        if (millis() - stateStartMs > TURN_TIME) setState(DRIVE_FWD);
-        break;
-
-      case GO_BACK:
-        go_Back();
-        if (millis() - stateStartMs > GO_BACK_TIME) setState(DRIVE_FWD);
+        turn_Right_inPlace();
+        if (millis() - stateStartMs > TURN_TIME_MS) setState(DRIVE_FWD);
         break;
 
       case HALT:
       default:
-        stop();
-        if (front_sector >= STOP_CM) setState(DRIVE_FWD);
+        stop_Stop();
+        if (front_sector >= FRONT_STOP_CM) setState(DRIVE_FWD);
         break;
     }
   }
